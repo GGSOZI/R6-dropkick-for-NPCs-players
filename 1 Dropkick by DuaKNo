@@ -1,17 +1,25 @@
+if _G.__DuaDropkick then
+	pcall(_G.__DuaDropkick)
+end
+
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local ContextActionService = game:GetService("ContextActionService")
 local Debris = game:GetService("Debris")
 local StarterGui = game:GetService("StarterGui")
 local player = Players.LocalPlayer
 
-local KEYBIND = Enum.KeyCode.F
-local ACTION_NAME = "DropkickAction"
+local TOOL_NAME = "Dropkick"
 local STEP_NAME = "DropkickStep"
 local COOLDOWN = 0.4
 local DASH_DISTANCE = 20
 local DASH_TIME = 0.5
 local LEG_GAP = 0.04
+
+-- click-to-target
+local TARGET_RANGE = 150 -- furthest you'll auto-dash to a clicked target
+local STOP_GAP = 3 -- how far in front of the target you stop
+local DASH_SPEED = 45 -- studs/sec, long dashes take longer so they stay smooth
+local MAX_DASH_TIME = 1.2
 
 local LAUNCH_T, LAND_T = 0.3, 0.86
 local GETUP_T = 1.35
@@ -66,10 +74,6 @@ local FRAMES = {
 	F(2.54, "out", { lean = -3, lift = -0.1, rLeg = 4, lLeg = -2, rSpr = 2, lSpr = 2, rsP = -8, rsR = 10, lsP = -4, lsR = 8 }),
 	F(2.8, "smooth", {}),
 }
-
-local function setUI(playing)
-	ContextActionService:SetTitle(ACTION_NAME, playing and "Stop" or "Dropkick")
-end
 
 local function rotated(orig, rot)
 	local p = orig.Position
@@ -270,6 +274,28 @@ local function characterModel(part)
 	return nil
 end
 
+-- what did the player click? returns (flat direction, distance to dash) or (direction, nil) for a plain click
+local function getAim(character, root)
+	local mouse = player:GetMouse()
+	pcall(function() mouse.TargetFilter = character end)
+	local target = mouse.Target
+	local model = target and characterModel(target)
+	local aimPos, isTarget
+	if model and model ~= character then
+		local r = model:FindFirstChild("HumanoidRootPart") or model.PrimaryPart or target
+		aimPos = r.Position
+		isTarget = true
+	else
+		aimPos = mouse.Hit.Position
+	end
+	local flat = Vector3.new(aimPos.X - root.Position.X, 0, aimPos.Z - root.Position.Z)
+	if flat.Magnitude < 0.5 then return nil, nil end
+	if isTarget then
+		return flat.Unit, math.max(0, math.min(flat.Magnitude - STOP_GAP, TARGET_RANGE))
+	end
+	return flat.Unit, nil
+end
+
 local function killNPC(model)
 	local hum = model:FindFirstChildOfClass("Humanoid")
 	if hum then
@@ -415,12 +441,11 @@ local function stop()
 	restore()
 	joints, parts = nil, nil
 	lastEnd = tick()
-	setUI(false)
 end
 
 local TOTAL = 2.8
 
-local function startEmote(character, humanoid)
+local function startEmote(character, humanoid, aimDir, aimDist)
 	local root = character:FindFirstChild("HumanoidRootPart")
 	if not root then return end
 
@@ -449,9 +474,17 @@ local function startEmote(character, humanoid)
 	track.Priority = Enum.AnimationPriority.Action4
 	track.Looped = false
 
-	local look = root.CFrame.LookVector
-	local dashDir = Vector3.new(look.X, 0, look.Z)
-	if dashDir.Magnitude > 0 then dashDir = dashDir.Unit end
+	local dashDir = aimDir
+	if not dashDir then
+		local look = root.CFrame.LookVector
+		dashDir = Vector3.new(look.X, 0, look.Z)
+		if dashDir.Magnitude > 0 then dashDir = dashDir.Unit end
+	elseif dashDir.Magnitude > 0 then
+		-- turn toward whatever was clicked
+		root.CFrame = CFrame.lookAt(root.Position, root.Position + dashDir)
+	end
+	local reach = aimDist and math.min(aimDist, TARGET_RANGE) or R15_DASH_DISTANCE
+
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.RespectCanCollide = true
@@ -459,7 +492,7 @@ local function startEmote(character, humanoid)
 	params.FilterDescendantsInstances = filter
 	local hit
 	for _ = 1, 16 do
-		hit = workspace:Raycast(root.Position, dashDir * (R15_DASH_DISTANCE + 3), params)
+		hit = workspace:Raycast(root.Position, dashDir * (reach + 3), params)
 		if not hit then break end
 		local model = hit.Instance:FindFirstAncestorOfClass("Model")
 		if model and model:FindFirstChildOfClass("Humanoid") then
@@ -470,7 +503,8 @@ local function startEmote(character, humanoid)
 			break
 		end
 	end
-	local dashMax = hit and math.max(0, hit.Distance - 3) or R15_DASH_DISTANCE
+	local dashMax = hit and math.max(0, hit.Distance - 3) or reach
+	local dashTime = math.clamp(dashMax / (R15_DASH_DISTANCE / R15_DASH_TIME), R15_DASH_TIME, MAX_DASH_TIME)
 	local dashDone = 0
 	flingDir = dashDir
 
@@ -494,7 +528,6 @@ local function startEmote(character, humanoid)
 	noclipOn(character)
 	targetsOn(character, root)
 	active = true
-	setUI(true)
 	track:Play(0.1, 1, R15_EMOTE_SPEED)
 	local t0 = tick()
 
@@ -507,7 +540,7 @@ local function startEmote(character, humanoid)
 		end
 		local dashT = tick() - t0 - R15_DASH_DELAY
 		if dashT > 0 and dashDone < dashMax and dashDir.Magnitude > 0 then
-			local k = math.clamp(dashT / R15_DASH_TIME, 0, 1)
+			local k = math.clamp(dashT / dashTime, 0, 1)
 			local want = dashMax * (1 - (1 - k) ^ 3)
 			root.CFrame = root.CFrame + dashDir * (want - dashDone)
 			dashDone = want
@@ -517,13 +550,13 @@ local function startEmote(character, humanoid)
 	end)
 end
 
-local function start()
+local function start(aimDir, aimDist)
 	if active or tick() - lastEnd < COOLDOWN then return end
 	local character = player.Character
 	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
 	if not humanoid or humanoid.Health <= 0 then return end
 	if humanoid.RigType == Enum.HumanoidRigType.R15 then
-		startEmote(character, humanoid)
+		startEmote(character, humanoid, aimDir, aimDist)
 		return
 	end
 	if humanoid.RigType ~= Enum.HumanoidRigType.R6 then
@@ -564,8 +597,11 @@ local function start()
 	diedConn = humanoid.Died:Connect(stop)
 
 	local root = character.HumanoidRootPart
-	local look = root.CFrame.LookVector
-	local dir = Vector3.new(look.X, 0, look.Z).Unit
+	local dir = aimDir
+	if not dir then
+		local look = root.CFrame.LookVector
+		dir = Vector3.new(look.X, 0, look.Z).Unit
+	end
 	local origin = root.Position
 	local groundY = origin.Y + groundRel
 	local landed = false
@@ -574,6 +610,7 @@ local function start()
 	uprightCF = CFrame.lookAt(origin, origin + dir)
 	flingDir = dir
 
+	local reach = aimDist and math.min(aimDist, TARGET_RANGE) or DASH_DISTANCE
 	local params = RaycastParams.new()
 	params.FilterType = Enum.RaycastFilterType.Exclude
 	params.RespectCanCollide = true
@@ -581,7 +618,7 @@ local function start()
 	params.FilterDescendantsInstances = filter
 	local hit
 	for _ = 1, 16 do
-		hit = workspace:Raycast(origin, dir * (DASH_DISTANCE + 3), params)
+		hit = workspace:Raycast(origin, dir * (reach + 3), params)
 		if not hit then break end
 		local model = hit.Instance:FindFirstAncestorOfClass("Model")
 		if model and model:FindFirstChildOfClass("Humanoid") then
@@ -592,7 +629,8 @@ local function start()
 			break
 		end
 	end
-	local maxDist = hit and math.max(0, hit.Distance - 3) or DASH_DISTANCE
+	local maxDist = hit and math.max(0, hit.Distance - 3) or reach
+	local dashTime = math.clamp(maxDist / DASH_SPEED, DASH_TIME, MAX_DASH_TIME)
 
 	local vy = root.AssemblyLinearVelocity.Y
 	local baseY = origin.Y
@@ -621,7 +659,7 @@ local function start()
 
 	local function travelled(t)
 		if t <= LAUNCH_T then return 0 end
-		local k = math.clamp((t - LAUNCH_T) / DASH_TIME, 0, 1)
+		local k = math.clamp((t - LAUNCH_T) / dashTime, 0, 1)
 		return maxDist * (1 - (1 - k) ^ 3)
 	end
 
@@ -636,7 +674,6 @@ local function start()
 
 	elapsed = 0
 	active = true
-	setUI(true)
 	RunService:BindToRenderStep(STEP_NAME, Enum.RenderPriority.Camera.Value - 1, function(dt)
 		if not (joints and joints.root.Parent and root.Parent) then stop() return end
 		elapsed = elapsed + dt
@@ -694,21 +731,55 @@ local function start()
 	end)
 end
 
-local function onAction(_, state)
-	if state ~= Enum.UserInputState.Begin then return Enum.ContextActionResult.Pass end
-	if active then stop() else start() end
-	return Enum.ContextActionResult.Sink
+----------------------------------------------------------------------
+-- THE TOOL
+----------------------------------------------------------------------
+local tool, toolConns = nil, {}
+
+local function giveTool()
+	task.wait()
+	local backpack = player:WaitForChild("Backpack")
+	for _, c in ipairs(toolConns) do c:Disconnect() end
+	toolConns = {}
+	if tool then tool:Destroy() end
+
+	tool = Instance.new("Tool")
+	tool.Name = TOOL_NAME
+	tool.ToolTip = "Equip, then click a target to dropkick it"
+	tool.RequiresHandle = false
+	tool.CanBeDropped = false
+
+	table.insert(toolConns, tool.Activated:Connect(function()
+		if active then return end
+		local character = player.Character
+		local root = character and character:FindFirstChild("HumanoidRootPart")
+		if not root then return end
+		local dir, dist = getAim(character, root)
+		start(dir, dist)
+	end))
+	table.insert(toolConns, tool.Unequipped:Connect(function()
+		if active then stop() end
+	end))
+
+	tool.Parent = backpack
 end
 
-ContextActionService:UnbindAction(ACTION_NAME)
-ContextActionService:BindAction(ACTION_NAME, onAction, true, KEYBIND)
-setUI(false)
-
-player.CharacterAdded:Connect(function()
+local charConn = player.CharacterAdded:Connect(function()
 	disconnectAll()
 	joints, parts, animateScript, humanoidRef, rootRef, uprightCF = nil, nil, nil, nil, nil, nil
-	setUI(false)
+	giveTool()
 end)
+
+task.spawn(giveTool)
+
+_G.__DuaDropkick = function()
+	pcall(stop)
+	charConn:Disconnect()
+	for _, c in ipairs(toolConns) do c:Disconnect() end
+	toolConns = {}
+	if tool then tool:Destroy() tool = nil end
+	_G.__DuaDropkick = nil
+end
 
 local OWNER_NAME = "DuaKNo"
 
