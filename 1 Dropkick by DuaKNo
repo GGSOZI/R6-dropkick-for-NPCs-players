@@ -1,0 +1,741 @@
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local ContextActionService = game:GetService("ContextActionService")
+local Debris = game:GetService("Debris")
+local StarterGui = game:GetService("StarterGui")
+local player = Players.LocalPlayer
+
+local KEYBIND = Enum.KeyCode.F
+local ACTION_NAME = "DropkickAction"
+local STEP_NAME = "DropkickStep"
+local COOLDOWN = 0.4
+local DASH_DISTANCE = 20
+local DASH_TIME = 0.5
+local LEG_GAP = 0.04
+
+local LAUNCH_T, LAND_T = 0.3, 0.86
+local GETUP_T = 1.35
+local GETUP_WALK_SCALE = 0.6
+
+local FLING_POWER = 99999999
+local FLING_FROM = 0.2
+local FLING_UNTIL = 1.3
+
+local R15_EMOTE_ID = 136821023303771
+local R15_EMOTE_SPEED = 1
+local R15_DASH_DISTANCE = 20
+local R15_DASH_TIME = 0.6
+local R15_DASH_DELAY = 0.5
+
+local SIM_RADIUS = 150
+local HIT_BOX = Vector3.new(4 * 1.2, 5 * 1.2, 2 * 1.2)
+local HIT_FORWARD = 3
+local TARGET_FLING_POWER = 100000
+local TARGET_FLING_TIME = 0.8
+local NPC_PUSH_POWER = 45
+local NPC_PUSH_UP = 12
+local NPC_PUSH_TIME = 0.3
+local PLAYER_FLING_RANGE = 15
+local MAX_PART_SIZE = 40
+
+local CAM_HEAD = Vector3.new(0, 1.5, 0)
+
+local KEYS = { "lean", "roll", "twist", "lift", "rLeg", "lLeg", "rSpr", "lSpr", "rsP", "rsR", "lsP", "lsR", "head" }
+
+local LAG = { lean = 0, roll = 0, twist = 0, lift = 0, rLeg = 0, lLeg = 0.02, rSpr = 0, lSpr = 0.02, rsP = 0.04, rsR = 0.04, lsP = 0.06, lsR = 0.06, head = 0.08 }
+
+local function F(t, e, d)
+	d.t, d.e = t, e
+	for _, k in ipairs(KEYS) do d[k] = d[k] or 0 end
+	return d
+end
+
+local FRAMES = {
+	F(0, "smooth", {}),
+	F(0.22, "smooth", { lean = -24, twist = -14, lift = -0.9, rLeg = 30, lLeg = 22, rSpr = 4, lSpr = 4, rsP = -55, rsR = 14, lsP = -38, lsR = 10, head = 14 }),
+	F(0.34, "out", { lean = 34, twist = 10, lift = 0.55, rLeg = 34, lLeg = 24, rSpr = 6, lSpr = 6, rsP = 62, rsR = 34, lsP = 48, lsR = 26, head = -4 }),
+	F(0.52, "out", { lean = 76, twist = 16, lift = 1.35, rLeg = 26, lLeg = 8, rSpr = 8, lSpr = 6, rsP = -18, rsR = 70, lsP = -30, lsR = 52, head = -34 }),
+	F(0.72, "linear", { lean = 82, twist = 14, lift = 1.22, rLeg = 22, lLeg = 6, rSpr = 8, lSpr = 6, rsP = -24, rsR = 68, lsP = -34, lsR = 54, head = -36 }),
+	F(0.92, "in", { lean = 88, twist = 4, lift = -2.5, rLeg = 8, lLeg = 2, rSpr = 6, lSpr = 6, rsP = -30, rsR = 62, lsP = -34, lsR = 56, head = -14 }),
+	F(1.04, "out", { lean = 76, twist = -3, lift = -2.5, rLeg = 18, lLeg = 10, rSpr = 7, lSpr = 7, rsP = -6, rsR = 74, lsP = -10, lsR = 66, head = 2 }),
+	F(1.2, "in", { lean = 90, lift = -2.5, rLeg = 6, lLeg = 3, rSpr = 6, lSpr = 6, rsP = -14, rsR = 62, lsP = -16, lsR = 54, head = -6 }),
+	F(1.35, "linear", { lean = 90, lift = -2.5, rLeg = 5, lLeg = 3, rSpr = 6, lSpr = 6, rsP = -12, rsR = 58, lsP = -14, lsR = 50, head = 2 }),
+	F(1.6, "inout", { lean = 60, roll = 8, twist = -6, lift = -2.5, rLeg = 44, lLeg = 22, rSpr = 6, lSpr = 5, rsP = -36, rsR = 24, lsP = 14, lsR = 28, head = -26 }),
+	F(1.88, "inout", { lean = -58, roll = 4, lift = -2.5, rLeg = 40, lLeg = 34, rSpr = 6, lSpr = 6, rsP = 58, rsR = 12, lsP = 52, lsR = 14, head = 30 }),
+	F(2.28, "inout", { lean = -22, twist = 4, lift = -2.5, rLeg = 50, lLeg = -34, rSpr = 4, lSpr = 4, rsP = -18, rsR = 18, lsP = -8, lsR = 14, head = 8 }),
+	F(2.54, "out", { lean = -3, lift = -0.1, rLeg = 4, lLeg = -2, rSpr = 2, lSpr = 2, rsP = -8, rsR = 10, lsP = -4, lsR = 8 }),
+	F(2.8, "smooth", {}),
+}
+
+local function setUI(playing)
+	ContextActionService:SetTitle(ACTION_NAME, playing and "Stop" or "Dropkick")
+end
+
+local function rotated(orig, rot)
+	local p = orig.Position
+	return CFrame.new(p) * rot * (CFrame.new(-p) * orig)
+end
+
+local function A(x, y, z)
+	return CFrame.Angles(math.rad(x or 0), math.rad(y or 0), math.rad(z or 0))
+end
+
+local function ease(kind, k)
+	if kind == "out" then
+		return 1 - (1 - k) ^ 3
+	elseif kind == "in" then
+		return k ^ 3
+	elseif kind == "inout" then
+		if k < 0.5 then return 4 * k ^ 3 end
+		return 1 - (-2 * k + 2) ^ 3 / 2
+	elseif kind == "snap" then
+		local c1 = 1.2
+		local c3 = c1 + 1
+		return 1 + c3 * (k - 1) ^ 3 + c1 * (k - 1) ^ 2
+	elseif kind == "linear" then
+		return k
+	end
+	return k * k * (3 - 2 * k)
+end
+
+local function channel(key, t)
+	if t < 0 then t = 0 end
+	local a, b = FRAMES[#FRAMES - 1], FRAMES[#FRAMES]
+	for i = 1, #FRAMES - 1 do
+		if t >= FRAMES[i].t and t <= FRAMES[i + 1].t then
+			a, b = FRAMES[i], FRAMES[i + 1]
+			break
+		end
+	end
+	local span = b.t - a.t
+	local k = span > 0 and math.clamp((t - a.t) / span, 0, 1) or 1
+	k = ease(b.e, k)
+	return a[key] + (b[key] - a[key]) * k
+end
+
+local function sample(t)
+	local out = {}
+	for _, key in ipairs(KEYS) do
+		out[key] = channel(key, t - LAG[key])
+	end
+	return out
+end
+
+local joints, parts, origC0 = nil, nil, {}
+local groundRel = 0
+
+local function grab(character)
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+	local torso = character:FindFirstChild("Torso")
+	local head = character:FindFirstChild("Head")
+	local ra, la = character:FindFirstChild("Right Arm"), character:FindFirstChild("Left Arm")
+	local rl, ll = character:FindFirstChild("Right Leg"), character:FindFirstChild("Left Leg")
+	if not (hrp and torso and head and ra and la and rl and ll) then return nil end
+	local j = {
+		root = hrp:FindFirstChild("RootJoint"),
+		neck = torso:FindFirstChild("Neck"),
+		rs = torso:FindFirstChild("Right Shoulder"),
+		ls = torso:FindFirstChild("Left Shoulder"),
+		rh = torso:FindFirstChild("Right Hip"),
+		lh = torso:FindFirstChild("Left Hip"),
+	}
+	for _, m in pairs(j) do
+		if not m then return nil end
+	end
+	return j, { torso = torso, head = head, rs = ra, ls = la, rh = rl, lh = ll }
+end
+
+local function buildC0(v)
+	return {
+		root = CFrame.new(0, v.lift, 0) * rotated(origC0.root, A(v.lean, v.twist, v.roll)),
+		neck = rotated(origC0.neck, A(v.head)),
+		rh = CFrame.new(LEG_GAP, 0, 0) * rotated(origC0.rh, A(v.rLeg, 0, v.rSpr)),
+		lh = CFrame.new(-LEG_GAP, 0, 0) * rotated(origC0.lh, A(v.lLeg, 0, -v.lSpr)),
+		rs = rotated(origC0.rs, A(v.rsP, 0, v.rsR)),
+		ls = rotated(origC0.ls, A(v.lsP, 0, -v.lsR)),
+	}
+end
+
+local function lowestPoint(c0)
+	local torsoCF = c0.root * joints.root.C1:Inverse()
+	local lowest = math.huge
+	local function scan(cf, size)
+		for sx = -1, 1, 2 do
+			for sy = -1, 1, 2 do
+				for sz = -1, 1, 2 do
+					local y = (cf * CFrame.new(sx * size.X / 2, sy * size.Y / 2, sz * size.Z / 2)).Position.Y
+					if y < lowest then lowest = y end
+				end
+			end
+		end
+	end
+	scan(torsoCF, parts.torso.Size)
+	scan(torsoCF * c0.neck * joints.neck.C1:Inverse(), parts.head.Size)
+	for _, name in ipairs({ "rs", "ls", "rh", "lh" }) do
+		scan(torsoCF * c0[name] * joints[name].C1:Inverse(), parts[name].Size)
+	end
+	return lowest
+end
+
+local REST = {}
+for _, k in ipairs(KEYS) do REST[k] = 0 end
+
+local function apply(v, onJoint)
+	local c0 = buildC0(v)
+	local low = lowestPoint(c0)
+	if low < groundRel then
+		v.lift = v.lift + (groundRel - low)
+		c0 = buildC0(v)
+	end
+	for name, cf in pairs(c0) do
+		if name ~= "root" then joints[name].C0 = cf end
+	end
+	if onJoint then joints.root.C0 = c0.root end
+	return c0.root * origC0.root:Inverse()
+end
+
+local function dust(pos, amount)
+	local p = Instance.new("Part")
+	p.Anchored = true
+	p.CanCollide = false
+	p.CanQuery = false
+	p.Transparency = 1
+	p.Size = Vector3.new(1, 1, 1)
+	p.Position = pos
+	p.Parent = workspace
+
+	local e = Instance.new("ParticleEmitter")
+	e.Texture = "rbxasset://textures/particles/smoke_main.dds"
+	e.Rate = 0
+	e.Lifetime = NumberRange.new(0.4, 0.8)
+	e.Speed = NumberRange.new(8, 14)
+	e.SpreadAngle = Vector2.new(75, 75)
+	e.EmissionDirection = Enum.NormalId.Top
+	e.Color = ColorSequence.new(Color3.fromRGB(190, 190, 190))
+	e.Size = NumberSequence.new({ NumberSequenceKeypoint.new(0, 1.5), NumberSequenceKeypoint.new(1, 4) })
+	e.Transparency = NumberSequence.new({ NumberSequenceKeypoint.new(0, 0.4), NumberSequenceKeypoint.new(1, 1) })
+	e.Parent = p
+	e:Emit(amount)
+	Debris:AddItem(p, 1.5)
+end
+
+local active = false
+local diedConn, flingConn, noclipConn = nil, nil, nil
+local elapsed = 0
+local animateScript = nil
+local humanoidRef, saved = nil, {}
+local rootRef, uprightCF = nil, nil
+local lastEnd = 0
+local flinging, flingDir = false, Vector3.zero
+local playerNear = false
+local collideSaved = {}
+local emoteTrack = nil
+
+local function noclipOn(character)
+	collideSaved = {}
+	for _, d in ipairs(character:GetDescendants()) do
+		if d:IsA("BasePart") then collideSaved[d] = d.CanCollide end
+	end
+	if noclipConn then noclipConn:Disconnect() end
+	noclipConn = RunService.Stepped:Connect(function()
+		for part in pairs(collideSaved) do
+			if part.Parent then part.CanCollide = false end
+		end
+	end)
+end
+
+local function noclipOff()
+	if noclipConn then noclipConn:Disconnect() noclipConn = nil end
+	for part, value in pairs(collideSaved) do
+		if part.Parent then part.CanCollide = value end
+	end
+	collideSaved = {}
+end
+
+local targetConn = nil
+local hitModels, hitParts = {}, {}
+
+local function setSimRadius()
+	pcall(function() player.MaximumSimulationRadius = SIM_RADIUS end)
+	if sethiddenproperty then pcall(sethiddenproperty, player, "SimulationRadius", SIM_RADIUS) end
+	if setsimulationradius then pcall(setsimulationradius, SIM_RADIUS, SIM_RADIUS) end
+end
+
+local function characterModel(part)
+	local m = part
+	while m and m ~= workspace do
+		if m:IsA("Model") and m:FindFirstChildOfClass("Humanoid") then return m end
+		m = m.Parent
+	end
+	return nil
+end
+
+local function killNPC(model)
+	local hum = model:FindFirstChildOfClass("Humanoid")
+	if hum then
+		pcall(function() hum.Health = 0 end)
+		pcall(function() hum:ChangeState(Enum.HumanoidStateType.Dead) end)
+	end
+	pcall(function() model:BreakJoints() end)
+end
+
+local function partsOf(model)
+	local list = {}
+	for _, d in ipairs(model:GetDescendants()) do
+		if d:IsA("BasePart") then table.insert(list, d) end
+	end
+	return list
+end
+
+local function scanTargets(character, root)
+	local dir = flingDir
+	if dir.Magnitude < 0.01 then return end
+	local pos = root.Position
+	local box = CFrame.lookAt(pos, pos + dir) * CFrame.new(0, 0, -HIT_FORWARD)
+	local op = OverlapParams.new()
+	op.FilterType = Enum.RaycastFilterType.Exclude
+	op.FilterDescendantsInstances = { character }
+	local push = dir * TARGET_FLING_POWER + Vector3.new(0, TARGET_FLING_POWER * 0.5, 0)
+	for _, part in ipairs(workspace:GetPartBoundsInBox(box, HIT_BOX, op)) do
+		local model = characterModel(part)
+		if model then
+			if model ~= character and not Players:GetPlayerFromCharacter(model) and not hitModels[model] then
+				killNPC(model)
+				hitModels[model] = {
+					parts = partsOf(model),
+					t = tick(),
+					time = NPC_PUSH_TIME,
+					push = dir * NPC_PUSH_POWER + Vector3.new(0, NPC_PUSH_UP, 0),
+					spin = Vector3.zero,
+				}
+			end
+		else
+			local assembly = part.AssemblyRootPart
+			if assembly and not assembly.Anchored and not hitParts[assembly]
+				and part.Size.Magnitude <= MAX_PART_SIZE then
+				hitParts[assembly] = { t = tick(), time = TARGET_FLING_TIME, push = push, spin = Vector3.new(80, 120, 80) }
+			end
+		end
+	end
+end
+
+local function applyTargetFling()
+	local now = tick()
+	for _, info in pairs(hitModels) do
+		if now - info.t < info.time then
+			for _, p in ipairs(info.parts) do
+				if p.Parent then
+					p.AssemblyLinearVelocity = info.push
+					p.AssemblyAngularVelocity = info.spin
+				end
+			end
+		end
+	end
+	for part, info in pairs(hitParts) do
+		if now - info.t < info.time and part.Parent then
+			part.AssemblyLinearVelocity = info.push
+			part.AssemblyAngularVelocity = info.spin
+		end
+	end
+end
+
+local function targetsOff()
+	playerNear = false
+	if targetConn then targetConn:Disconnect() targetConn = nil end
+	hitModels, hitParts = {}, {}
+end
+
+local function targetsOn(character, root)
+	targetsOff()
+	targetConn = RunService.Heartbeat:Connect(function()
+		setSimRadius()
+		playerNear = false
+		if flinging and root.Parent then
+			scanTargets(character, root)
+			local pos = root.Position
+			for _, pl in ipairs(Players:GetPlayers()) do
+				local c = pl ~= player and pl.Character
+				local r = c and c:FindFirstChild("HumanoidRootPart")
+				if r and (r.Position - pos).Magnitude <= PLAYER_FLING_RANGE then
+					playerNear = true
+					break
+				end
+			end
+		end
+		applyTargetFling()
+	end)
+end
+
+local function disconnectAll()
+	flinging = false
+	if diedConn then diedConn:Disconnect() diedConn = nil end
+	if flingConn then flingConn:Disconnect() flingConn = nil end
+	noclipOff()
+	targetsOff()
+	if emoteTrack then
+		local track = emoteTrack
+		emoteTrack = nil
+		pcall(function() track:Stop(0.1) end)
+	end
+	if active then
+		pcall(function() RunService:UnbindFromRenderStep(STEP_NAME) end)
+	end
+	active = false
+end
+
+local function restore()
+	if joints then
+		for k, m in pairs(joints) do
+			if m and m.Parent and origC0[k] then m.C0 = origC0[k] end
+		end
+	end
+	if humanoidRef and humanoidRef.Parent then
+		humanoidRef.WalkSpeed = saved.walk
+		humanoidRef.JumpPower = saved.jumpPower
+		humanoidRef.JumpHeight = saved.jumpHeight
+		humanoidRef.AutoRotate = saved.autoRotate
+		humanoidRef.PlatformStand = saved.platformStand
+		humanoidRef.CameraOffset = saved.camOffset
+	end
+	if rootRef and rootRef.Parent and uprightCF then
+		rootRef.CFrame = uprightCF
+	end
+	if rootRef and rootRef.Parent then
+		rootRef.AssemblyLinearVelocity = Vector3.zero
+		rootRef.AssemblyAngularVelocity = Vector3.zero
+	end
+	rootRef, uprightCF = nil, nil
+	humanoidRef = nil
+	if animateScript and animateScript.Parent then animateScript.Enabled = true end
+	animateScript = nil
+end
+
+local function stop()
+	disconnectAll()
+	restore()
+	joints, parts = nil, nil
+	lastEnd = tick()
+	setUI(false)
+end
+
+local TOTAL = 2.8
+
+local function startEmote(character, humanoid)
+	local root = character:FindFirstChild("HumanoidRootPart")
+	if not root then return end
+
+	local animator = humanoid:FindFirstChildOfClass("Animator")
+	if not animator then
+		animator = Instance.new("Animator")
+		animator.Parent = humanoid
+	end
+	local animId
+	local gotObjects, result = pcall(function()
+		return game:GetObjects("rbxassetid://" .. tostring(R15_EMOTE_ID))
+	end)
+	if gotObjects and result and #result > 0 and result[1]:IsA("Animation") then
+		animId = result[1].AnimationId
+	else
+		animId = "rbxassetid://" .. tostring(R15_EMOTE_ID)
+	end
+
+	local anim = Instance.new("Animation")
+	anim.AnimationId = animId
+	local ok, track = pcall(function() return animator:LoadAnimation(anim) end)
+	if not ok or not track then
+		warn("Dropkick: could not load the R15 emote.")
+		return
+	end
+	track.Priority = Enum.AnimationPriority.Action4
+	track.Looped = false
+
+	local look = root.CFrame.LookVector
+	local dashDir = Vector3.new(look.X, 0, look.Z)
+	if dashDir.Magnitude > 0 then dashDir = dashDir.Unit end
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.RespectCanCollide = true
+	local filter = { character }
+	params.FilterDescendantsInstances = filter
+	local hit
+	for _ = 1, 16 do
+		hit = workspace:Raycast(root.Position, dashDir * (R15_DASH_DISTANCE + 3), params)
+		if not hit then break end
+		local model = hit.Instance:FindFirstAncestorOfClass("Model")
+		if model and model:FindFirstChildOfClass("Humanoid") then
+			table.insert(filter, model)
+			params.FilterDescendantsInstances = filter
+			hit = nil
+		else
+			break
+		end
+	end
+	local dashMax = hit and math.max(0, hit.Distance - 3) or R15_DASH_DISTANCE
+	local dashDone = 0
+	flingDir = dashDir
+
+	humanoidRef = nil
+	rootRef = root
+	emoteTrack = track
+	diedConn = humanoid.Died:Connect(stop)
+
+	local pulsed, lastVel = false, Vector3.zero
+	flingConn = RunService.Heartbeat:Connect(function()
+		if not flinging or not playerNear or not root.Parent then return end
+		local look = root.CFrame.LookVector
+		local d = Vector3.new(look.X, 0, look.Z)
+		if d.Magnitude > 0 then d = d.Unit end
+		lastVel = root.AssemblyLinearVelocity
+		pulsed = true
+		root.AssemblyLinearVelocity = d * FLING_POWER + Vector3.new(0, FLING_POWER, 0)
+		root.AssemblyAngularVelocity = Vector3.new(0, FLING_POWER, 0)
+	end)
+
+	noclipOn(character)
+	targetsOn(character, root)
+	active = true
+	setUI(true)
+	track:Play(0.1, 1, R15_EMOTE_SPEED)
+	local t0 = tick()
+
+	RunService:BindToRenderStep(STEP_NAME, Enum.RenderPriority.First.Value, function()
+		if not (root.Parent and humanoid.Parent) then stop() return end
+		if pulsed then
+			pulsed = false
+			root.AssemblyLinearVelocity = lastVel
+			root.AssemblyAngularVelocity = Vector3.zero
+		end
+		local dashT = tick() - t0 - R15_DASH_DELAY
+		if dashT > 0 and dashDone < dashMax and dashDir.Magnitude > 0 then
+			local k = math.clamp(dashT / R15_DASH_TIME, 0, 1)
+			local want = dashMax * (1 - (1 - k) ^ 3)
+			root.CFrame = root.CFrame + dashDir * (want - dashDone)
+			dashDone = want
+		end
+		if tick() - t0 > 0.5 and not track.IsPlaying then stop() return end
+		flinging = track.IsPlaying
+	end)
+end
+
+local function start()
+	if active or tick() - lastEnd < COOLDOWN then return end
+	local character = player.Character
+	local humanoid = character and character:FindFirstChildOfClass("Humanoid")
+	if not humanoid or humanoid.Health <= 0 then return end
+	if humanoid.RigType == Enum.HumanoidRigType.R15 then
+		startEmote(character, humanoid)
+		return
+	end
+	if humanoid.RigType ~= Enum.HumanoidRigType.R6 then
+		warn("Dropkick: unsupported rig type.")
+		return
+	end
+	local j, p = grab(character)
+	if not j then
+		warn("Dropkick: could not find R6 joints.")
+		return
+	end
+	joints, parts = j, p
+	for k, m in pairs(joints) do origC0[k] = m.C0 end
+	groundRel = lowestPoint(buildC0(REST))
+
+	animateScript = character:FindFirstChild("Animate")
+	if animateScript then animateScript.Enabled = false end
+	local animator = humanoid:FindFirstChildOfClass("Animator")
+	if animator then
+		for _, t in ipairs(animator:GetPlayingAnimationTracks()) do t:Stop(0) end
+	end
+
+	humanoidRef = humanoid
+	saved = {
+		walk = humanoid.WalkSpeed,
+		jumpPower = humanoid.JumpPower,
+		jumpHeight = humanoid.JumpHeight,
+		autoRotate = humanoid.AutoRotate,
+		platformStand = humanoid.PlatformStand,
+		camOffset = humanoid.CameraOffset,
+	}
+	humanoid.WalkSpeed = 0
+	humanoid.JumpPower = 0
+	humanoid.JumpHeight = 0
+	humanoid.AutoRotate = false
+	humanoid.PlatformStand = true
+
+	diedConn = humanoid.Died:Connect(stop)
+
+	local root = character.HumanoidRootPart
+	local look = root.CFrame.LookVector
+	local dir = Vector3.new(look.X, 0, look.Z).Unit
+	local origin = root.Position
+	local groundY = origin.Y + groundRel
+	local landed = false
+	local control = false
+	rootRef = root
+	uprightCF = CFrame.lookAt(origin, origin + dir)
+	flingDir = dir
+
+	local params = RaycastParams.new()
+	params.FilterType = Enum.RaycastFilterType.Exclude
+	params.RespectCanCollide = true
+	local filter = { character }
+	params.FilterDescendantsInstances = filter
+	local hit
+	for _ = 1, 16 do
+		hit = workspace:Raycast(origin, dir * (DASH_DISTANCE + 3), params)
+		if not hit then break end
+		local model = hit.Instance:FindFirstAncestorOfClass("Model")
+		if model and model:FindFirstChildOfClass("Humanoid") then
+			table.insert(filter, model)
+			params.FilterDescendantsInstances = filter
+			hit = nil
+		else
+			break
+		end
+	end
+	local maxDist = hit and math.max(0, hit.Distance - 3) or DASH_DISTANCE
+
+	local vy = root.AssemblyLinearVelocity.Y
+	local baseY = origin.Y
+	local grounded = false
+	local curGroundY = groundY
+	local gFilter = { character }
+	local gParams = RaycastParams.new()
+	gParams.FilterType = Enum.RaycastFilterType.Exclude
+	gParams.RespectCanCollide = true
+	gParams.FilterDescendantsInstances = gFilter
+
+	local function groundHeightAt(p)
+		for _ = 1, 8 do
+			local r = workspace:Raycast(p + Vector3.new(0, 1, 0), Vector3.new(0, -500, 0), gParams)
+			if not r then return nil end
+			local m = characterModel(r.Instance)
+			if m then
+				table.insert(gFilter, m)
+				gParams.FilterDescendantsInstances = gFilter
+			else
+				return r.Position.Y
+			end
+		end
+		return nil
+	end
+
+	local function travelled(t)
+		if t <= LAUNCH_T then return 0 end
+		local k = math.clamp((t - LAUNCH_T) / DASH_TIME, 0, 1)
+		return maxDist * (1 - (1 - k) ^ 3)
+	end
+
+	flingConn = RunService.Heartbeat:Connect(function()
+		if not flinging or not playerNear or not root.Parent then return end
+		root.AssemblyLinearVelocity = flingDir * FLING_POWER + Vector3.new(0, FLING_POWER, 0)
+		root.AssemblyAngularVelocity = Vector3.new(0, FLING_POWER, 0)
+	end)
+
+	noclipOn(character)
+	targetsOn(character, root)
+
+	elapsed = 0
+	active = true
+	setUI(true)
+	RunService:BindToRenderStep(STEP_NAME, Enum.RenderPriority.Camera.Value - 1, function(dt)
+		if not (joints and joints.root.Parent and root.Parent) then stop() return end
+		elapsed = elapsed + dt
+		if elapsed >= TOTAL then stop() return end
+
+		if not landed and elapsed >= LAND_T and grounded then
+			landed = true
+			local p2 = origin + dir * travelled(elapsed)
+			dust(Vector3.new(p2.X, curGroundY + 0.1, p2.Z), 24)
+		end
+
+		if not control and elapsed >= GETUP_T then
+			control = true
+			flinging = false
+			noclipOff()
+			root.CFrame = uprightCF
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+			uprightCF = nil
+			humanoid.CameraOffset = saved.camOffset
+			humanoid.PlatformStand = saved.platformStand
+			humanoid.AutoRotate = saved.autoRotate
+			humanoid.WalkSpeed = saved.walk * GETUP_WALK_SCALE
+		end
+
+		flinging = (not control) and elapsed >= FLING_FROM and elapsed < FLING_UNTIL
+
+		if control then
+			apply(sample(elapsed), true)
+		else
+			local delta = apply(sample(elapsed))
+			local flat = origin + dir * travelled(elapsed)
+			vy = vy - workspace.Gravity * dt
+			baseY = baseY + vy * dt
+			local gy = groundHeightAt(Vector3.new(flat.X, baseY, flat.Z))
+			grounded = false
+			if gy then
+				curGroundY = gy
+				if baseY <= gy - groundRel then
+					baseY = gy - groundRel
+					vy = 0
+					grounded = true
+				end
+			end
+			local pos = Vector3.new(flat.X, baseY, flat.Z)
+			uprightCF = CFrame.lookAt(pos, pos + dir)
+			root.CFrame = uprightCF * delta
+			root.AssemblyLinearVelocity = Vector3.zero
+			root.AssemblyAngularVelocity = Vector3.zero
+
+			local rc = root.CFrame
+			local focus = pos + CAM_HEAD + uprightCF:VectorToWorldSpace(saved.camOffset)
+			humanoid.CameraOffset = rc:VectorToObjectSpace(focus - rc.Position) - CAM_HEAD
+		end
+	end)
+end
+
+local function onAction(_, state)
+	if state ~= Enum.UserInputState.Begin then return Enum.ContextActionResult.Pass end
+	if active then stop() else start() end
+	return Enum.ContextActionResult.Sink
+end
+
+ContextActionService:UnbindAction(ACTION_NAME)
+ContextActionService:BindAction(ACTION_NAME, onAction, true, KEYBIND)
+setUI(false)
+
+player.CharacterAdded:Connect(function()
+	disconnectAll()
+	joints, parts, animateScript, humanoidRef, rootRef, uprightCF = nil, nil, nil, nil, nil, nil
+	setUI(false)
+end)
+
+local OWNER_NAME = "DuaKNo"
+
+local function notify(title, body, icon)
+	for _ = 1, 20 do
+		local ok = pcall(function()
+			StarterGui:SetCore("SendNotification", {
+				Title = title,
+				Text = body,
+				Icon = icon or "",
+				Duration = 8,
+			})
+		end)
+		if ok then return end
+		task.wait(0.5)
+	end
+end
+
+task.spawn(function()
+	local icon
+	pcall(function()
+		local id = Players:GetUserIdFromNameAsync(OWNER_NAME)
+		icon = Players:GetUserThumbnailAsync(id, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size150x150)
+	end)
+	notify("Dropkick", "R6/R15 dropkick for NPCs/Players", icon)
+	task.wait(0.3)
+	notify("Follow on Instagram", "me_duakno")
+	task.wait(0.3)
+	notify("Join Discord server for more", "discord.gg/empgqd5qpq")
+end)
