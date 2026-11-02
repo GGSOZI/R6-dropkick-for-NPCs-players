@@ -27,9 +27,9 @@ local R15_DASH_DISTANCE = 20
 local R15_DASH_TIME = 0.6
 local R15_DASH_DELAY = 0.5
 
-local SIM_RADIUS = 150
-local HIT_BOX = Vector3.new(4 * 1.2, 5 * 1.2, 2 * 1.2)
-local HIT_FORWARD = 3
+local SIM_RADIUS = 400
+local HIT_BOX = Vector3.new(9, 9, 7)
+local HIT_FORWARD = 4
 local TARGET_FLING_POWER = 100000
 local TARGET_FLING_TIME = 0.8
 local NPC_PUSH_POWER = 45
